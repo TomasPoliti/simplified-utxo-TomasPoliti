@@ -19,16 +19,76 @@ export class TransactionValidator {
   validateTransaction(transaction: Transaction): ValidationResult {
     const errors: ValidationError[] = [];
 
-    // STUDENT ASSIGNMENT: Implement the validation logic above
-    // Remove this line and implement the actual validation
-    throw new Error('Transaction validation not implemented - this is your assignment!');
+    const tempPool = this.utxoPool.clone();
 
-    return {
-      valid: errors.length === 0,
-      errors
-    };
+    const txData = this.createTransactionDataForSigning_(transaction);
+    let totalInputs = 0;
+    let totalOutputs = 0;
+
+    for (const input of transaction.inputs) {
+      const { txId, outputIndex } = input.utxoId;
+
+      // 1) Verificamos existencia en el pool real
+      const utxo = this.utxoPool.getUTXO(txId, outputIndex);
+      if (!utxo) {
+        errors.push(createValidationError(
+            VALIDATION_ERRORS.UTXO_NOT_FOUND,
+            `UTXO no encontrado: ${txId}:${outputIndex}`
+        ));
+        continue;
+      }
+
+      // 2) Simulamos el gasto en el pool clonado
+      const removed = tempPool.removeUTXO(txId, outputIndex);
+      if (!removed) {
+        errors.push(createValidationError(
+            VALIDATION_ERRORS.DOUBLE_SPENDING,
+            `UTXO referenciado más de una vez: ${txId}:${outputIndex}`
+        ));
+      }
+
+      // 3) Monto positivo del input
+      if (!Number.isFinite(utxo.amount) || utxo.amount <= 0) {
+        errors.push(createValidationError(
+            VALIDATION_ERRORS.NEGATIVE_AMOUNT,
+            `UTXO con monto no positivo: ${utxo.amount} en ${txId}:${outputIndex}`
+        ));
+      } else {
+        totalInputs += utxo.amount;
+      }
+
+      // 4) Firma válida del dueño del UTXO
+      const okSig = verify(txData, input.signature, utxo.recipient);
+      if (!okSig) {
+        errors.push(createValidationError(
+            VALIDATION_ERRORS.INVALID_SIGNATURE,
+            `Firma inválida para UTXO ${txId}:${outputIndex}`
+        ));
+      }
+    }
+
+    for (const out of transaction.outputs) {
+      if (!Number.isFinite(out.amount) || out.amount <= 0) {
+        errors.push(createValidationError(
+            VALIDATION_ERRORS.NEGATIVE_AMOUNT,
+            `Output con monto no positivo: ${out.amount} para ${out.recipient}`
+        ));
+      } else {
+        totalOutputs += out.amount;
+      }
+    }
+    
+    if (totalInputs !== totalOutputs) {
+      errors.push(createValidationError(
+          VALIDATION_ERRORS.AMOUNT_MISMATCH,
+          `Suma entradas=${totalInputs} distinta a salidas=${totalOutputs}`
+      ));
+    }
+
+    return { valid: errors.length === 0, errors };
   }
 
+  
   /**
    * Create a deterministic string representation of the transaction for signing
    * This excludes the signatures to prevent circular dependencies
